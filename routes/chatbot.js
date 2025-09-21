@@ -26,7 +26,7 @@ router.post("/", async (req, res) => {
     });
 
     res.json({
-      reply: response.choices[0].message,
+      reply: response.choices[0].message.content,
     });
   } catch (error) {
     console.error(error);
