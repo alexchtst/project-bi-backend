@@ -25,6 +25,7 @@ app.get("/", async (req, res) => {
 });
 app.use("/chatbot", chatbotRoutes);
 app.use("/users", userRoutes);
+app.use("/images", express.static("images"))
 
 
 const connectandrun = async () => {
