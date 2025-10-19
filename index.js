@@ -6,6 +6,8 @@ import mongoose from "mongoose";
 import chatbotRoutes from "./routes/chatbot.js";
 import userRoutes from "./routes/user.js"
 
+import path from path;
+
 dotenv.config();
 const app = express();
 const PORT = 3000;
@@ -25,7 +27,7 @@ app.get("/", async (req, res) => {
 });
 app.use("/chatbot", chatbotRoutes);
 app.use("/users", userRoutes);
-app.use("/images", express.static("images"))
+app.use("/images", express.static(path.join(__dirname, "public")))
 
 
 const connectandrun = async () => {
