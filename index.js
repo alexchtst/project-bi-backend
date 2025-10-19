@@ -2,19 +2,13 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import path from "path";
-import { fileURLToPath } from "url";
-import { createServerlessExpress } from "vercel-serverless-express";
 
-import chatbotRoutes from "../routes/chatbot.js";
-import userRoutes from "../routes/user.js";
+import chatbotRoutes from "./routes/chatbot.js";
+import userRoutes from "./routes/user.js"
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
+const PORT = 3000;
 
 app.use(
   cors({
@@ -25,31 +19,30 @@ app.use(
 );
 
 app.use(express.json());
-app.get("/", (req, res) => res.send("Hello World from Vercel + Express!"));
+
+app.get("/", async (req, res) => {
+  return res.send("hallo world");
+});
 app.use("/chatbot", chatbotRoutes);
 app.use("/users", userRoutes);
+// app.use("/images", express.static(path.join(__dirname, "public")))
 
-// serve static images
-app.use("/images", express.static(path.join(__dirname, "../public/images")));
 
-let isConnected = false;
-
-async function connectToDB() {
-  if (isConnected) return;
+const connectandrun = async () => {
   try {
-    await mongoose.connect(process.env.CONNECTION_STRING);
-    console.log("✅ Connected to MongoDB");
-    isConnected = true;
+    console.log(process.env.CONNECTION_STRING)
+    await mongoose.connect(process.env.CONNECTION_STRING, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("berhasil connect ke database");
+    app.listen(PORT, () => {
+      console.log(`server run in localhost:${PORT}`);
+    });
   } catch (error) {
-    console.error("❌ MongoDB connection failed", error);
+    console.log("failed to connect to mongodb database", error);
+    process.exit(1);
   }
-}
+};
 
-// koneksi sebelum setiap request
-app.use(async (req, res, next) => {
-  await connectToDB();
-  next();
-});
-
-// export sebagai handler untuk vercel
-export default createServerlessExpress(app);
+connectandrun();
