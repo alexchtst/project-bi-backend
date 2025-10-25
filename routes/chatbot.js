@@ -1,81 +1,140 @@
-import { OpenAI } from "openai";
+import { HfInference } from "@huggingface/inference";
 import express from "express";
 import dotenv from "dotenv";
-import { documentText } from "../data/text-content.js";
+import { textContent } from "../data/text-content.js";
 
 dotenv.config();
 
 const router = express.Router();
+const hf = new HfInference(process.env.HF_TOKEN);
 
-// helper: simple cosine similarity function
-function cosineSimilarity(vecA, vecB) {
-  const dot = vecA.reduce((acc, v, i) => acc + v * vecB[i], 0);
-  const magA = Math.sqrt(vecA.reduce((acc, v) => acc + v * v, 0));
-  const magB = Math.sqrt(vecB.reduce((acc, v) => acc + v * v, 0));
-  return dot / (magA * magB);
+function chunkText(text, chunkSize = 800) {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  const chunks = [];
+  let currentChunk = "";
+  
+  sentences.forEach(sentence => {
+    if ((currentChunk + sentence).length < chunkSize) {
+      currentChunk += sentence;
+    } else {
+      if (currentChunk) chunks.push(currentChunk.trim());
+      currentChunk = sentence;
+    }
+  });
+  
+  if (currentChunk) chunks.push(currentChunk.trim());
+  return chunks;
 }
 
-// simple embedding via HF API (or use OpenAI if preferred)
-async function getEmbedding(client, text) {
-  const response = await client.embeddings.create({
-    model: "sentence-transformers/all-MiniLM-L6-v2",
-    input: text,
-  });
-  return response.data[0].embedding;
+async function getEmbedding(text) {
+  try {
+    const response = await hf.featureExtraction({
+      model: "sentence-transformers/all-MiniLM-L6-v2",
+      inputs: text,
+    });
+    return response;
+  } catch (error) {
+    console.error("Error getting embedding:", error);
+    throw error;
+  }
+}
+
+function cosineSimilarity(vecA, vecB) {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+let documentChunks = [];
+let chunkEmbeddings = [];
+let isInitialized = false;
+
+async function initializeEmbeddings() {
+  if (isInitialized) return;
+  
+  console.log("Initializing document embeddings...");
+  documentChunks = chunkText(textContent);
+  
+  for (let i = 0; i < documentChunks.length; i++) {
+    console.log(`Processing chunk ${i + 1}/${documentChunks.length}`);
+    const embedding = await getEmbedding(documentChunks[i]);
+    chunkEmbeddings.push({
+      text: documentChunks[i],
+      embedding: embedding
+    });
+    
+    // Small delay untuk avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  isInitialized = true;
+  console.log("Embeddings initialized!");
+}
+
+async function retrieveRelevantChunks(query, topK = 3) {
+  // Pastikan embeddings sudah diinisialisasi
+  if (!isInitialized) {
+    await initializeEmbeddings();
+  }
+  
+  const queryEmbedding = await getEmbedding(query);
+  
+  const scoredChunks = chunkEmbeddings.map(chunk => ({
+    text: chunk.text,
+    score: cosineSimilarity(queryEmbedding, chunk.embedding)
+  }));
+  
+  scoredChunks.sort((a, b) => b.score - a.score);
+  
+  return scoredChunks.slice(0, topK);
 }
 
 router.post("/", async (req, res) => {
   const { message } = req.body;
 
   try {
-    const client = new OpenAI({
-      baseURL: "https://router.huggingface.co/v1",
-      apiKey: process.env.HF_TOKEN,
-    });
+    const relevantChunks = await retrieveRelevantChunks(message);
+    const context = relevantChunks
+      .map((chunk, idx) => `[Context ${idx + 1}]:\n${chunk.text}`)
+      .join("\n\n");
+    
+    const augmentedPrompt = `You are a helpful assistant. Use the following context to answer the user's question. If the context doesn't contain relevant information, you can use your general knowledge but mention that.
 
-    // Step 1: split document
-    const chunks = documentText.split(/\.\s+/);
+Context:
+${context}
 
-    // Step 2: embed user query and each chunk
-    const queryEmbedding = await getEmbedding(client, message);
+User Question: ${message}
 
-    const scoredChunks = [];
-    for (const chunk of chunks) {
-      const chunkEmbedding = await getEmbedding(client, chunk);
-      const score = cosineSimilarity(queryEmbedding, chunkEmbedding);
-      scoredChunks.push({ chunk, score });
-    }
+Answer:`;
 
-    // Step 3: sort and take top 2 relevant chunks
-    const topChunks = scoredChunks
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 2)
-      .map((c) => c.chunk)
-      .join(". ");
-
-    // Step 4: augment message
-    const augmentedPrompt = `
-Gunakan konteks berikut untuk menjawab pertanyaan pengguna.
-
-Konteks:
-${topChunks}
-
-Pertanyaan:
-${message}
-    `;
-
-    // Step 5: send to LLM
-    const response = await client.chat.completions.create({
+    // Gunakan Hugging Face Chat Completion
+    const response = await hf.chatCompletion({
       model: "meta-llama/Llama-3.1-8B-Instruct",
       messages: [
-        { role: "system", content: "Kamu adalah asisten yang membantu menjawab berdasarkan konteks dokumen." },
-        { role: "user", content: augmentedPrompt },
+        {
+          role: "user",
+          content: augmentedPrompt,
+        },
       ],
+      max_tokens: 500,
+      temperature: 0.7,
     });
 
     res.json({
       reply: response.choices[0].message.content,
-      contextUsed: topChunks,
+      relevantChunks: relevantChunks.map(c => ({
+        text: c.text.substring(0, 100) + "...",
+        score: c.score.toFixed(3)
+      }))
     });
   } catch (error) {
     console.error(error);
@@ -83,4 +142,6 @@ ${message}
   }
 });
 
+// Export fungsi init untuk dipanggil dari server.js
+export { initializeEmbeddings };
 export default router;
